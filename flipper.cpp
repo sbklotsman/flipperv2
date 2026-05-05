@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <ctime>
 #include <sstream>
+#include <unistd.h> // Required for sysconf to get Linux page size
 
 // ==========================================
 // --- CONFIGURATION ---
@@ -74,8 +75,16 @@ std::string getStartupTimestamp() {
 }
 
 double getProcessRamUsageMB() {
-    // Windows specific RAM tracking removed for Linux compatibility
-    return 0.0;
+    std::ifstream stat_stream("/proc/self/statm", std::ios_base::in);
+    if (!stat_stream.is_open()) return 0.0;
+    
+    long dummy, rss;
+    // statm format: size resident shared text lib data dt
+    stat_stream >> dummy >> rss; 
+    stat_stream.close();
+    
+    long page_size = sysconf(_SC_PAGE_SIZE); // Dynamically grab system page size (usually 4KB)
+    return (rss * page_size) / (1024.0 * 1024.0);
 }
 
 // ==========================================
@@ -149,18 +158,23 @@ int main() {
     if(shared_curl_handle) { 
         std::cout << "Starting HEAD-Only Ghost Poller...\n\n";
 
+        double current_ram_mb = 0.0; // Cache RAM so we don't query the OS every millisecond
+
         while (true) {
             auto total_iter_start = std::chrono::high_resolution_clock::now();
             
             NetMetrics net = getHeadResponse(shared_curl_handle, header_buffer);
             bool is_new_data = false;
-            bool trigger_hibernation = false; // New flag to handle sleep timing
+            bool trigger_hibernation = false; 
 
             // Check if the Last-Modified header changed
             if (!net.last_modified.empty() && net.last_modified != "UNKNOWN" && net.last_modified != previous_last_modified) {
-                if (!previous_last_modified.empty()) { // Don't flag the very first run
+                if (!previous_last_modified.empty()) { 
                     is_new_data = true;
                     trigger_hibernation = true;
+                    
+                    // Update RAM only when we secure data (Zero latency added to hyper-polling)
+                    current_ram_mb = getProcessRamUsageMB(); 
                     
                     std::cout << "\n==================================================\n";
                     std::cout << "[!] NEW HEADERS DETECTED! (Last-Modified changed)\n";
@@ -173,9 +187,8 @@ int main() {
 
             auto total_iter_end = std::chrono::high_resolution_clock::now();
             int64_t total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(total_iter_end - total_iter_start).count();
-            double current_ram_mb = getProcessRamUsageMB();
 
-            // BUG FIX 1: Print the stats IMMEDIATELY before doing any sleeping
+            // Console Output
             std::cout << "[NET] TTFB: " << (int)net.ttfb_ms << "ms | Code: " << net.code << " | CF: " << net.cache_status << "\n";
             std::cout << "[SYS] RAM: " << std::fixed << std::setprecision(1) << current_ram_mb << " MB | **TOTAL**: " << total_ms << "ms\n";
 
@@ -194,15 +207,23 @@ int main() {
                     << net.cache_status << "\n";
             csvFile.flush(); 
 
-            // BUG FIX 2: Dynamic Hibernation Tracking (Replaces the broken clock logic)
+            // THE CONTROLLED SEVER
             if (trigger_hibernation) {
-                std::cout << "[SYS] Data secured. Initiating 50-second dynamic hibernation to track drift...\n\n";
+                std::cout << "[SYS] Data secured. Destroying connection pool and entering 50s hibernation...\n\n";
+                
+                // 1. Destroy connection cache to force Cloudflare to drop us
+                curl_easy_cleanup(shared_curl_handle); 
+
                 std::this_thread::sleep_for(std::chrono::seconds(50));
-                std::cout << "[SYS] Waking up! Engaging hyper-polling for the next drop...\n";
-                continue; // Skips the Poll Interval sleep below and immediately loops
+                
+                // 2. Rebuild handle. The next request will naturally trigger a fresh DNS/TCP/TLS handshake.
+                shared_curl_handle = curl_easy_init(); 
+
+                std::cout << "[SYS] Waking up! Fresh connection pool ready. Engaging hyper-polling...\n";
+                continue; 
             }
 
-            // Calculate Sleep for normal polling intervals
+            // Calculate Sleep
             auto sleep_calc_end = std::chrono::high_resolution_clock::now();
             int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(sleep_calc_end - total_iter_start).count();
             
@@ -211,7 +232,7 @@ int main() {
                 std::cout << "[SYS] Sleep: " << sleep_time << "ms\n\n";
                 std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
             } else {
-                std::cout << "[SYS] Sleep: 0ms (Warning: Lagging behind poll interval!)\n\n";
+                std::cout << "[SYS] Sleep: 0ms\n\n";
             }
         }
         curl_easy_cleanup(shared_curl_handle); 
