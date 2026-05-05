@@ -107,10 +107,10 @@ def analyze_session():
     # --- METRIC 2: HARD OUTLIER ANALYSIS (>100ms) ---
     outliers_legacy = non_new_data[non_new_data['Time to First Byte (ms)'] > 100].copy()
     
-    # --- BUG FIX: This filter will now populate because DNS noise is clamped ---
+    # --- BUG FIX: Changed '== 0' to '< 1.0' to allow for microsecond libcurl noise ---
     valid_normal_legacy = non_new_data[
         (non_new_data['Time to First Byte (ms)'] <= 100) & 
-        (non_new_data['DNS Lookup Time (ms)'] == 0)
+        (non_new_data['DNS Lookup Time (ms)'] < 1.0)
     ]
     
     print(f"[2] HARD OUTLIER ANALYSIS (Strictly >100ms)")
