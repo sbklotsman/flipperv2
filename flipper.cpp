@@ -108,10 +108,11 @@ NetMetrics getHeadResponse(CURL* curl, std::string& header_bucket) {
         curl_easy_getinfo(curl, CURLINFO_PRETRANSFER_TIME, &pre);
         curl_easy_getinfo(curl, CURLINFO_STARTTRANSFER_TIME, &start);
 
-        metrics.dns_ms = dns * 1000.0;
-        metrics.tcp_ms = (conn - dns) * 1000.0;
-        metrics.tls_ms = (tls - conn) * 1000.0;
-        metrics.ttfb_ms = (start - pre) * 1000.0;
+        // --- BUG FIX: Clamp any negative telemetry values to zero ---
+        metrics.dns_ms = std::max(0.0, dns * 1000.0);
+        metrics.tcp_ms = std::max(0.0, (conn - dns) * 1000.0);
+        metrics.tls_ms = std::max(0.0, (tls - conn) * 1000.0);
+        metrics.ttfb_ms = std::max(0.0, (start - pre) * 1000.0);
         
         curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &metrics.code);
         metrics.cache_status = std::string(getHeaderValue(header_bucket, "CF-Cache-Status:"));
@@ -146,9 +147,24 @@ int main() {
             << "Cloudflare Cache Status\n";
 
     if(shared_curl_handle) { 
-        std::cout << "Starting HEAD-Only Baseline (Polling every " << POLL_INTERVAL_MS << "ms)...\n\n";
+        std::cout << "Starting HEAD-Only Ghost Poller...\n\n";
 
         while (true) {
+            // --- TIME SYNC LOGIC (The "Second 57" Protocol) ---
+            auto now = std::chrono::system_clock::now();
+            std::time_t tnow = std::chrono::system_clock::to_time_t(now);
+            std::tm *date = std::localtime(&tnow);
+
+            // If we are between second 0 and 56, go to sleep.
+            if (date->tm_sec < 57) {
+                int ms_until_57 = (57 - date->tm_sec) * 1000 - (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+                if (ms_until_57 > 0) {
+                    std::cout << "\r[SYS] Hibernating until :57 to dodge Cloudflare limits. Waking up in " << (ms_until_57 / 1000.0) << "s...   " << std::flush;
+                    std::this_thread::sleep_for(std::chrono::milliseconds(ms_until_57));
+                    std::cout << "\n[SYS] Waking up! Engaging hyper-polling...\n";
+                }
+            }
+
             auto total_iter_start = std::chrono::high_resolution_clock::now();
             
             NetMetrics net = getHeadResponse(shared_curl_handle, header_buffer);
@@ -207,4 +223,3 @@ int main() {
     curl_global_cleanup(); 
     return 0;              
 }
-
