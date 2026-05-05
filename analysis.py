@@ -179,17 +179,27 @@ def analyze_session():
         print("[5] THE WAITING ROOM: No new data drops found during this session.\n")
 
     # --- METRIC 6: VANGUARD "MISS" ANALYSIS ---
+    new_data = df[df['Is New Data Detected'] == 'YES'].copy()
+    total_new_data_events = len(new_data)
     miss_data = df[df['Cloudflare Cache Status'] == 'MISS'].copy()
-    print(f"[6] VANGUARD 'MISS' ANALYSIS (Did we trigger the origin pull?):")
-    print(f"    - Total 'MISS' Events Recorded: {len(miss_data)}")
     
-    if not miss_data.empty:
+    print(f"[6] VANGUARD 'MISS' ANALYSIS (Did we trigger the origin pull?):")
+    print(f"    - Total API Updates Detected (Total YES events): {total_new_data_events}")
+    
+    if total_new_data_events > 0:
         miss_and_new = miss_data[miss_data['Is New Data Detected'] == 'YES']
-        print(f"    - Successful Origin Triggers (MISS + YES): {len(miss_and_new)}")
-        print(f"    - MISS Latency Avg: {miss_data['Time to First Byte (ms)'].mean():.2f} ms (StdDev: ±{miss_data['Time to First Byte (ms)'].std():.2f} ms)\n")
+        vanguard_wins = len(miss_and_new)
+        win_rate = (vanguard_wins / total_new_data_events) * 100
+        
+        print(f"    - Successful Origin Triggers (MISS + YES): {vanguard_wins}")
+        print(f"    - Vanguard Win Rate: {win_rate:.1f}% (Beat the internet to the edge node)")
+        if not miss_data.empty:
+            print(f"    - MISS Latency Avg: {miss_data['Time to First Byte (ms)'].mean():.2f} ms (StdDev: ±{miss_data['Time to First Byte (ms)'].std():.2f} ms)\n")
+        else:
+            print()
     else:
-        print("    - No MISS events found. (Cache beat you to the edge node!)\n")
-
+        print("    - No new data events found.\n")
+        
     # --- METRIC 7: THE STAMPEDE CORRELATION ---
     print("[7] THE STAMPEDE CORRELATION (Edge Node Load Testing):")
     if not outliers_dynamic.empty and not new_data.empty:
