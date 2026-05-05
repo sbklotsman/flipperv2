@@ -155,8 +155,9 @@ int main() {
             std::time_t tnow = std::chrono::system_clock::to_time_t(now);
             std::tm *date = std::localtime(&tnow);
 
-            // If we are between second 0 and 56, go to sleep.
-            if (date->tm_sec < 57) {
+            // BUG FIX: Hibernate ONLY between second 04 and 56.
+            // This leaves 57, 58, 59, 00, 01, 02, and 03 open for hyper-polling.
+            if (date->tm_sec >= 4 && date->tm_sec < 57) {
                 int ms_until_57 = (57 - date->tm_sec) * 1000 - (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
                 if (ms_until_57 > 0) {
                     std::cout << "\r[SYS] Hibernating until :57 to dodge Cloudflare limits. Waking up in " << (ms_until_57 / 1000.0) << "s...   " << std::flush;
@@ -177,6 +178,10 @@ int main() {
                     std::cout << "\n==================================================\n";
                     std::cout << "[!] NEW HEADERS DETECTED! (Last-Modified changed)\n";
                     std::cout << "==================================================\n";
+                    
+                    // Stop polling and push the clock forward into the hibernation zone
+                    std::cout << "[SYS] Data secured. Fast-forwarding to hibernation zone...\n\n";
+                    std::this_thread::sleep_for(std::chrono::seconds(8));
                 }
                 previous_last_modified = net.last_modified;
             }
