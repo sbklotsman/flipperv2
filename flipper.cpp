@@ -173,11 +173,12 @@ int main() {
                     is_new_data = true;
                     trigger_hibernation = true;
                     
-                    // Update RAM only when we secure data (Zero latency added to hyper-polling)
+                    // Update RAM only when we secure data
                     current_ram_mb = getProcessRamUsageMB(); 
                     
                     std::cout << "\n==================================================\n";
-                    std::cout << "[!] NEW HEADERS DETECTED! (Last-Modified changed)\n";
+                    std::cout << "[!] NEW HEADERS DETECTED!\n";
+                    std::cout << "[!] SECURED AT: " << getPreciseTimestamp() << "\n";
                     std::cout << "==================================================\n";
                     
                     // ---> THIS IS WHERE YOUR 'GET' TRIPWIRE WILL GO <---
@@ -188,11 +189,13 @@ int main() {
             auto total_iter_end = std::chrono::high_resolution_clock::now();
             int64_t total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(total_iter_end - total_iter_start).count();
 
-            // Console Output
-            std::cout << "[NET] TTFB: " << (int)net.ttfb_ms << "ms | Code: " << net.code << " | CF: " << net.cache_status << "\n";
-            std::cout << "[SYS] RAM: " << std::fixed << std::setprecision(1) << current_ram_mb << " MB | **TOTAL**: " << total_ms << "ms\n";
+            // Console Output (Only print full stats if we found new data to keep terminal clean)
+            if (is_new_data) {
+                std::cout << "[NET] TTFB: " << (int)net.ttfb_ms << "ms | Code: " << net.code << " | CF: " << net.cache_status << "\n";
+                std::cout << "[SYS] RAM: " << std::fixed << std::setprecision(1) << current_ram_mb << " MB | **TOTAL**: " << total_ms << "ms\n";
+            }
 
-            // CSV Output
+            // CSV Output (STILL 100% ACTIVE AND UNCHANGED)
             csvFile << net.time_sent << ","
                     << net.time_received << ","
                     << (is_new_data ? "YES" : "NO") << "," 
@@ -211,15 +214,11 @@ int main() {
             if (trigger_hibernation) {
                 std::cout << "[SYS] Data secured. Destroying connection pool and entering 50s hibernation...\n\n";
                 
-                // 1. Destroy connection cache to force Cloudflare to drop us
                 curl_easy_cleanup(shared_curl_handle); 
-
                 std::this_thread::sleep_for(std::chrono::seconds(50));
-                
-                // 2. Rebuild handle. The next request will naturally trigger a fresh DNS/TCP/TLS handshake.
                 shared_curl_handle = curl_easy_init(); 
 
-                std::cout << "[SYS] Waking up! Fresh connection pool ready. Engaging hyper-polling...\n";
+                std::cout << "[SYS] Waking up at " << getPreciseTimestamp() << "! Fresh connection pool ready. Engaging hyper-polling...\n";
                 continue; 
             }
 
@@ -229,10 +228,7 @@ int main() {
             
             int64_t sleep_time = POLL_INTERVAL_MS - elapsed_ms;
             if (sleep_time > 0) {
-                std::cout << "[SYS] Sleep: " << sleep_time << "ms\n\n";
                 std::this_thread::sleep_for(std::chrono::milliseconds(sleep_time));
-            } else {
-                std::cout << "[SYS] Sleep: 0ms\n\n";
             }
         }
         curl_easy_cleanup(shared_curl_handle); 
