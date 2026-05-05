@@ -150,48 +150,23 @@ int main() {
         std::cout << "Starting HEAD-Only Ghost Poller...\n\n";
 
         while (true) {
-            // --- TIME SYNC LOGIC (The "Second 57" Protocol) ---
-            auto now = std::chrono::system_clock::now();
-            std::time_t tnow = std::chrono::system_clock::to_time_t(now);
-            std::tm *date = std::localtime(&tnow);
-
-            // Hibernate ONLY between second 04 and 56.
-            if (date->tm_sec >= 4 && date->tm_sec < 57) {
-                int current_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
-                int ms_until_57 = (57 - date->tm_sec) * 1000 - current_ms;
-                
-                if (ms_until_57 > 0) {
-                    // Pre-Sleep Timestamp
-                    std::cout << "\n==================================================\n";
-                    std::cout << "[TIME-CHECK] SLEEPING. I think the time is: " << getStartupTimestamp() << " and " << current_ms << "ms\n";
-                    std::cout << "[SYS] Hibernating to dodge limits. Waking up in " << (ms_until_57 / 1000.0) << "s...\n";
-                    
-                    // The actual sleep command
-                    std::this_thread::sleep_for(std::chrono::milliseconds(ms_until_57));
-                    
-                    // Post-Sleep Timestamp (Using getPreciseTimestamp for exact HH:MM:SS.ms)
-                    std::cout << "[TIME-CHECK] AWAKE. I think the time is: " << getPreciseTimestamp() << "\n";
-                    std::cout << "[SYS] Engaging hyper-polling...\n";
-                    std::cout << "==================================================\n\n";
-                }
-            }
-
             auto total_iter_start = std::chrono::high_resolution_clock::now();
             
             NetMetrics net = getHeadResponse(shared_curl_handle, header_buffer);
             bool is_new_data = false;
+            bool trigger_hibernation = false; // New flag to handle sleep timing
 
             // Check if the Last-Modified header changed
             if (!net.last_modified.empty() && net.last_modified != "UNKNOWN" && net.last_modified != previous_last_modified) {
                 if (!previous_last_modified.empty()) { // Don't flag the very first run
                     is_new_data = true;
+                    trigger_hibernation = true;
+                    
                     std::cout << "\n==================================================\n";
                     std::cout << "[!] NEW HEADERS DETECTED! (Last-Modified changed)\n";
                     std::cout << "==================================================\n";
                     
-                    // Stop polling and push the clock forward into the hibernation zone
-                    std::cout << "[SYS] Data secured. Fast-forwarding to hibernation zone...\n\n";
-                    std::this_thread::sleep_for(std::chrono::seconds(8));
+                    // ---> THIS IS WHERE YOUR 'GET' TRIPWIRE WILL GO <---
                 }
                 previous_last_modified = net.last_modified;
             }
@@ -200,7 +175,7 @@ int main() {
             int64_t total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(total_iter_end - total_iter_start).count();
             double current_ram_mb = getProcessRamUsageMB();
 
-            // Console Output
+            // BUG FIX 1: Print the stats IMMEDIATELY before doing any sleeping
             std::cout << "[NET] TTFB: " << (int)net.ttfb_ms << "ms | Code: " << net.code << " | CF: " << net.cache_status << "\n";
             std::cout << "[SYS] RAM: " << std::fixed << std::setprecision(1) << current_ram_mb << " MB | **TOTAL**: " << total_ms << "ms\n";
 
@@ -219,7 +194,15 @@ int main() {
                     << net.cache_status << "\n";
             csvFile.flush(); 
 
-            // Calculate Sleep
+            // BUG FIX 2: Dynamic Hibernation Tracking (Replaces the broken clock logic)
+            if (trigger_hibernation) {
+                std::cout << "[SYS] Data secured. Initiating 50-second dynamic hibernation to track drift...\n\n";
+                std::this_thread::sleep_for(std::chrono::seconds(50));
+                std::cout << "[SYS] Waking up! Engaging hyper-polling for the next drop...\n";
+                continue; // Skips the Poll Interval sleep below and immediately loops
+            }
+
+            // Calculate Sleep for normal polling intervals
             auto sleep_calc_end = std::chrono::high_resolution_clock::now();
             int64_t elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(sleep_calc_end - total_iter_start).count();
             
