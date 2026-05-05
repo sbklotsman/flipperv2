@@ -155,14 +155,24 @@ int main() {
             std::time_t tnow = std::chrono::system_clock::to_time_t(now);
             std::tm *date = std::localtime(&tnow);
 
-            // BUG FIX: Hibernate ONLY between second 04 and 56.
-            // This leaves 57, 58, 59, 00, 01, 02, and 03 open for hyper-polling.
+            // Hibernate ONLY between second 04 and 56.
             if (date->tm_sec >= 4 && date->tm_sec < 57) {
-                int ms_until_57 = (57 - date->tm_sec) * 1000 - (std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000);
+                int current_ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count() % 1000;
+                int ms_until_57 = (57 - date->tm_sec) * 1000 - current_ms;
+                
                 if (ms_until_57 > 0) {
-                    std::cout << "\r[SYS] Hibernating until :57 to dodge Cloudflare limits. Waking up in " << (ms_until_57 / 1000.0) << "s...   " << std::flush;
+                    // Pre-Sleep Timestamp
+                    std::cout << "\n==================================================\n";
+                    std::cout << "[TIME-CHECK] SLEEPING. I think the time is: " << getStartupTimestamp() << " and " << current_ms << "ms\n";
+                    std::cout << "[SYS] Hibernating to dodge limits. Waking up in " << (ms_until_57 / 1000.0) << "s...\n";
+                    
+                    // The actual sleep command
                     std::this_thread::sleep_for(std::chrono::milliseconds(ms_until_57));
-                    std::cout << "\n[SYS] Waking up! Engaging hyper-polling...\n";
+                    
+                    // Post-Sleep Timestamp (Using getPreciseTimestamp for exact HH:MM:SS.ms)
+                    std::cout << "[TIME-CHECK] AWAKE. I think the time is: " << getPreciseTimestamp() << "\n";
+                    std::cout << "[SYS] Engaging hyper-polling...\n";
+                    std::cout << "==================================================\n\n";
                 }
             }
 
