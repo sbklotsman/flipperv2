@@ -49,6 +49,9 @@ def analyze_session():
     numeric_cols = ['DNS Lookup Time (ms)', 'TCP Handshake Time (ms)', 'TLS Handshake Time (ms)', 'Time to First Byte (ms)']
     for col in numeric_cols:
         df[col] = pd.to_numeric(df[col], errors='coerce')
+        # --- BUG FIX: Clamp any negative telemetry values to zero before analysis ---
+        # This addresses libcurl/time precision issues producing negative handshake times.
+        df[col] = df[col].clip(lower=0.0)
 
     total_calls = len(df)
     
@@ -65,8 +68,17 @@ def analyze_session():
     print(f"Total Network Calls Analyzed: {total_calls}")
     print(f"Effective Polling Interval (w/ Overhead): {effective_poll_rate_ms:.2f} ms per call\n")
 
-    # --- METRIC 1: CLOUDFLARE KEEP-ALIVE TERMINATIONS ---
-    renegotiation_indices = df.index[(df['DNS Lookup Time (ms)'] > 0) | (df['TCP Handshake Time (ms)'] > 0) | (df['TLS Handshake Time (ms)'] > 0)].tolist()
+    # --- METRIC 1: CLOUDFLARE KEEP-ALIVE TERMINATIONS (Fixed Noise Handling) ---
+    
+    # --- BUG FIX: Threshold adjusted to 1.0ms to ignore microsecond noise ---
+    # Values under 1ms are typical of a warm connection; values over 1ms represent a true connection setup.
+    handshake_threshold = 1.0 # 1.0 ms
+    renegotiation_indices = df.index[
+        (df['DNS Lookup Time (ms)'] > handshake_threshold) |
+        (df['TCP Handshake Time (ms)'] > handshake_threshold) |
+        (df['TLS Handshake Time (ms)'] > handshake_threshold)
+    ].tolist()
+    
     renegotiations = df.iloc[renegotiation_indices].copy()
     
     print(f"[1] CLOUDFLARE KEEP-ALIVE TERMINATIONS")
@@ -94,6 +106,8 @@ def analyze_session():
 
     # --- METRIC 2: HARD OUTLIER ANALYSIS (>100ms) ---
     outliers_legacy = non_new_data[non_new_data['Time to First Byte (ms)'] > 100].copy()
+    
+    # --- BUG FIX: This filter will now populate because DNS noise is clamped ---
     valid_normal_legacy = non_new_data[
         (non_new_data['Time to First Byte (ms)'] <= 100) & 
         (non_new_data['DNS Lookup Time (ms)'] == 0)
@@ -102,6 +116,7 @@ def analyze_session():
     print(f"[2] HARD OUTLIER ANALYSIS (Strictly >100ms)")
     print(f"    - Total Major Spikes: {len(outliers_legacy)}")
             
+    # This will now display a number, not NaN.
     avg_ttfb_normal_legacy = valid_normal_legacy['Time to First Byte (ms)'].mean()
     print(f"\n    => UNFILTERED BASELINE PING: {avg_ttfb_normal_legacy:.2f} ms\n")
 
@@ -125,6 +140,7 @@ def analyze_session():
     print(f"\n    => TRUE BASELINE PING (Strict IQR): {avg_normal_dyn:.2f} ms (StdDev: ±{std_normal_dyn:.2f} ms)\n")
 
     # --- METRIC 4: NETWORK PATTERN ANALYZER ---
+    # Note: Autocorrelation at microsecond pooling intervals often registers false patterns.
     print(f"[4] NETWORK PATTERN ANALYSIS (Autocorrelation)")
     valid_normal_dynamic['TTFB_Diff'] = valid_normal_dynamic['Time to First Byte (ms)'].diff()
     
@@ -139,9 +155,9 @@ def analyze_session():
     print(f"    - Autocorrelation Score: {autocorr:.3f}" if not np.isnan(autocorr) else "    - Autocorrelation Score: N/A (variance is 0)")
     if not np.isnan(autocorr):
         if autocorr > 0.3:
-            print("      (Diagnosis: Strong Pattern. Your router/ISP is likely buffering packets in batches.)")
+            print("      (Diagnosis: Strong Pattern. Possible device buffering.)")
         elif autocorr < -0.3:
-            print("      (Diagnosis: Hard Oscillation. Fast-Slow-Fast-Slow ping pong effect.)")
+            print("      (Diagnosis: Hard Oscillation. Latency ping-pong effect.)")
         else:
             print("      (Diagnosis: Weak Pattern. Latency changes are natural internet jitter.)")
         
@@ -172,7 +188,7 @@ def analyze_session():
         print(f"    - Successful Origin Triggers (MISS + YES): {len(miss_and_new)}")
         print(f"    - MISS Latency Avg: {miss_data['Time to First Byte (ms)'].mean():.2f} ms (StdDev: ±{miss_data['Time to First Byte (ms)'].std():.2f} ms)\n")
     else:
-        print("    - No MISS events found. (The Ghost Vanguard beat you to the edge node!)\n")
+        print("    - No MISS events found. (Cache beat you to the edge node!)\n")
 
     # --- METRIC 7: THE STAMPEDE CORRELATION ---
     print("[7] THE STAMPEDE CORRELATION (Edge Node Load Testing):")
@@ -214,8 +230,7 @@ def analyze_session():
         graph_filename = 'ttfb_graph.png'
         plt.savefig(graph_filename, dpi=300)
         print(f"    => Local copy saved as '{graph_filename}'.")
-        print("    => Launching interactive graph window...")
-        plt.show() 
+        # plt.show() # Commented out to prevent attempting to open window on Vultr/SSH
     else:
         print("    => Error: No valid non-new data points found to graph.")
 
